@@ -321,7 +321,7 @@ class MixedPd(Pd):
         assert isinstance(other, MixedPd)
         return self.BernoulliPd.kl(other.BernoulliPd) + self.DiagGaussianPd.kl(other.DiagGaussianPd)
     def entropy(self):
-        return 0.0 * self.BernoulliPd.entropy() + self.DiagGaussianPd.entropy()
+        return 0.0 * self.BernoulliPd.entropy() + self.DiagGaussianPd.entropy() # adding Bernoulli entropy will force the prob to 0.5, which is not proper in MDP
     def sample(self):
         return tf.concat([self.BernoulliPd.sample(), self.DiagGaussianPd.sample()], axis=1)
     @classmethod
