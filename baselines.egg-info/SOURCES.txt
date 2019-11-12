@@ -95,14 +95,6 @@ baselines/cpo/__init__.py
 baselines/cpo/cpo.py
 baselines/cpo/distributions.py
 baselines/cpo/policies.py
-baselines/cppo/__init__.py
-baselines/cppo/cnn_policy.py
-baselines/cppo/cppo.py
-baselines/cppo/mlp_policy.py
-baselines/cppo/run_atari.py
-baselines/cppo/run_humanoid.py
-baselines/cppo/run_mujoco.py
-baselines/cppo/run_robotics.py
 baselines/ddpg/__init__.py
 baselines/ddpg/ddpg.py
 baselines/ddpg/ddpg_learner.py
@@ -148,6 +140,10 @@ baselines/her/experiment/__init__.py
 baselines/her/experiment/config.py
 baselines/her/experiment/play.py
 baselines/her/experiment/plot.py
+baselines/pcpo/__init__.py
+baselines/pcpo/pcpo.py
+baselines/pcpo/policies.py
+baselines/pcpo/runner.py
 baselines/ppo1/__init__.py
 baselines/ppo1/cnn_policy.py
 baselines/ppo1/mlp_policy.py

@@ -45,6 +45,7 @@ class Monitor(Wrapper):
         if not self.allow_early_resets and not self.needs_reset:
             raise RuntimeError("Tried to reset an environment before done. If you want to allow early resets, wrap your env with Monitor(env, path, allow_early_resets=True)")
         self.rewards = []
+        self.safety = []
         self.needs_reset = False
 
 
@@ -57,11 +58,13 @@ class Monitor(Wrapper):
 
     def update(self, ob, rew, done, info):
         self.rewards.append(rew)
+        self.safety.append(info.get('s'))
         if done:
             self.needs_reset = True
             eprew = sum(self.rewards)
+            epsft = sum(self.safety)
             eplen = len(self.rewards)
-            epinfo = {"r": round(eprew, 6), "l": eplen, "t": round(time.time() - self.tstart, 6)}
+            epinfo = {"r": round(eprew, 6), "l": eplen, "t": round(time.time() - self.tstart, 6), "s": round(epsft, 6)}
             for k in self.info_keywords:
                 epinfo[k] = info[k]
             self.episode_rewards.append(eprew)

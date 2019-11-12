@@ -11,7 +11,8 @@ from baselines.common.mpi_adam import MpiAdam
 from baselines.common.cg import cg
 from baselines.common.input import observation_placeholder
 from baselines.common.vec_env import VecFrameStack, VecNormalize, VecEnv
-from baselines.cpo.policies import build_policy
+from baselines.pcpo.policies import build_policy
+from baselines.pcpo.runner import Runner
 from contextlib import contextmanager
 
 try:
@@ -25,11 +26,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 def traj_segment_generator(pi, env, horizon, stochastic):
     # Initialize state variables
     t = 0
-    ac = env.action_space.sample()
-    if isinstance(ac, tuple):
-        ac = np.concatenate(list(ac))
-    new = True
-    rew = [0.0, 0.0]
+    nenv = env.num_envs
     ob = env.reset()
 
     cur_ep_ret = 0
@@ -40,55 +37,56 @@ def traj_segment_generator(pi, env, horizon, stochastic):
     ep_lens = []
 
     # Initialize history arrays
-    obs = np.array([ob for _ in range(horizon)])
-    acs = np.array([ac for _ in range(horizon)])
-    rews = np.zeros([horizon, 2], 'float32')
-    vpreds = np.zeros([horizon, 2], 'float32')
-    news = np.zeros(horizon, 'int32')
-    prevacs = acs.copy()
-
+    obs, acs, rews, vpreds, news = [], [], [], [], []
     while True:
-        prevac = ac
         ac, vpred, _, _ = pi.step(ob, stochastic=stochastic)
         # Slight weirdness here because we need value function at time T
         # before returning segment [0, T-1] so we get the correct
         # terminal value
         if t > 0 and t % horizon == 0:
+            obs = np.stack(obs, axis=1).reshape(horizon*nenv, ob.shape[1])
+            acs = np.stack(acs, axis=1).reshape(horizon*nenv, ac.shape[1])
+            rews = np.stack(rews, axis=1).reshape(horizon*nenv, 2)
+            vpreds = np.stack(vpreds, axis=1).reshape(horizon*nenv, 2)
+            news = np.stack(news, axis=1).reshape(horizon*nenv, 1)
             yield {"ob" : obs, "rew" : rews, "vpred" : vpreds, "new" : news,
-                    "ac" : acs, "prevac" : prevacs, "nextvpred": vpred * (1 - new),
+                    "ac" : acs, "nextvpred": vpred * (1 - new.reshape(nenv, 1)),
                     "ep_rets" : ep_rets, "ep_sfts" : ep_sfts, "ep_lens" : ep_lens, 
                    }
             _, vpred, _, _ = pi.step(ob, stochastic=stochastic)
             # Be careful!!! if you change the downstream algorithm to aggregate
             # several of these batches, then be sure to do a deepcopy
-            ep_rets = []
-            ep_sfts = []
-            ep_lens = []
-        i = t % horizon
-        obs[i] = ob
-        news[i] = new
-        acs[i] = ac
-        vpreds[i] = vpred
-        prevacs[i] = prevac
-
-        ob, rew, new, info = env.step(ac)
-        if isinstance(env, VecEnv):
-            sft = info[0]["s"] if "s" in info[0].keys() else 0.0
-        else:
-            sft = info["s"] if "s" in info.keys() else 0.0
-        rews[i] = [rew, sft]
-
-        cur_ep_ret += rew
-        cur_ep_sft += sft
-        cur_ep_len += 1
-        if new:
-            ep_rets.append(cur_ep_ret)
-            ep_sfts.append(cur_ep_sft)
-            ep_lens.append(cur_ep_len)
             cur_ep_ret = 0
             cur_ep_sft = 0
             cur_ep_len = 0
-            ob = env.reset()
+            ep_rets = []
+            ep_sfts = []
+            ep_lens = []
+            
+            obs, acs, rews, vpreds, news = [], [], [], [], []
+
+        ob, rew, new, info = env.step(ac)
+        sft = np.array([info[i]["s"] if "s" in info[i].keys() else 0.0 for i in range(nenv)])
+        rew_sft = np.stack([rew, sft], axis=1)
+
+        obs.append(ob)
+        acs.append(ac)
+        news.append(new)
+        rews.append(rew_sft)
+        vpreds.append(vpred)
+
+        cur_ep_ret += rew
+        cur_ep_sft += sft
+        cur_ep_len += np.ones(nenv)
+        if new.any():
+            i = np.where(new==1)
+            ep_rets.extend(cur_ep_ret[i].tolist())
+            ep_sfts.extend(cur_ep_sft[i].tolist())
+            ep_lens.extend(cur_ep_len[i].tolist())
+            cur_ep_ret[i] = 0
+            cur_ep_sft[i] = 0
+            cur_ep_len[i] = 0
+            # ob = env.reset()
         t += 1
 
 def add_targ_and_adv(seg, gamma, lam):
@@ -112,6 +110,7 @@ def learn(*,
         env,
         total_timesteps,
         timesteps_per_batch=1024, # what to train on
+        nsteps=144,
         max_kl=0.01,
         max_sf=1e10,
         cg_iters=10,
@@ -196,6 +195,7 @@ def learn(*,
     ))
 
     policy = build_policy(env, network, **network_kwargs)
+    runner = Runner(env=env, policy=policy, nsteps=nsteps, gamma=gamma, lam=lam)
     set_global_seeds(seed)
 
     np.set_printoptions(precision=3)
@@ -301,7 +301,7 @@ def learn(*,
 
     # Prepare for rollouts
     # ----------------------------------------
-    seg_gen = traj_segment_generator(pi, env, timesteps_per_batch, stochastic=True)
+    # seg_gen = traj_segment_generator(pi, env, timesteps_per_batch, stochastic=True)
 
     global episodes_so_far, timesteps_so_far, iters_so_far
     eps = 1e-8
@@ -332,14 +332,17 @@ def learn(*,
         logger.log("********** Iteration %i ************"%iters_so_far)
 
         with timed("sampling"):
-            seg = seg_gen.__next__()
-        add_targ_and_adv(seg, gamma, lam)
+            ob, returns, masks, actions, values, atarg, neglogpacs, states, epinfos = runner.run() #pylint: disable=E0632
+            atarg = (atarg - atarg.mean()) / (atarg.std() + eps) # standardized advantage function estimate
+            args = obs, actions, atarg, seg["T"]
+        #     seg = seg_gen.__next__()
+        # add_targ_and_adv(seg, gamma, lam)
 
-        # ob, ac, atarg, sfatarg, T = map(np.concatenate, (obs, acs, atargs, sfatarg, T))
-        ob, ac, atarg, T = seg["ob"], seg["ac"], seg["adv"], seg["T"]
-        atarg = (atarg - atarg.mean()) / (atarg.std() + eps) # standardized advantage function estimate
+        # # ob, ac, atarg, sfatarg, T = map(np.concatenate, (obs, acs, atargs, sfatarg, T))
+        # ob, ac, atarg, T = seg["ob"], seg["ac"], seg["adv"], seg["T"]
+        # atarg = (atarg - atarg.mean()) / (atarg.std() + eps) # standardized advantage function estimate
 
-        args = seg["ob"], seg["ac"], atarg, seg["T"]
+        # args = seg["ob"], seg["ac"], atarg, seg["T"]
         fvpargs = [arr[::5] for arr in args[:3]]
         def fisher_vector_product(p):
             return allmean(compute_fvp(p, *fvpargs)) + cg_damping * p
@@ -350,7 +353,7 @@ def learn(*,
         # update value network
         with timed("vf"):
             for _ in range(vf_iters):
-                for (mbob, mbret) in dataset.iterbatches((seg["ob"], seg["tdlamret"]),
+                for (mbob, mbret) in dataset.iterbatches((obs, returns),
                 include_final_partial_batch=False, batch_size=64):
                     g = allmean(compute_vflossandgrad(mbob, mbret))
                     vfadam.update(g, vf_stepsize)
