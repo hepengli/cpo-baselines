@@ -23,107 +23,26 @@ except ImportError:
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-def traj_segment_generator(pi, env, horizon, stochastic):
-    # Initialize state variables
-    t = 0
-    nenv = env.num_envs
-    ob = env.reset()
-
-    cur_ep_ret = 0
-    cur_ep_sft = 0
-    cur_ep_len = 0
-    ep_rets = []
-    ep_sfts = []
-    ep_lens = []
-
-    # Initialize history arrays
-    obs, acs, rews, vpreds, news = [], [], [], [], []
-    while True:
-        ac, vpred, _, _ = pi.step(ob, stochastic=stochastic)
-        # Slight weirdness here because we need value function at time T
-        # before returning segment [0, T-1] so we get the correct
-        # terminal value
-        if t > 0 and t % horizon == 0:
-            obs = np.stack(obs, axis=1).reshape(horizon*nenv, ob.shape[1])
-            acs = np.stack(acs, axis=1).reshape(horizon*nenv, ac.shape[1])
-            rews = np.stack(rews, axis=1).reshape(horizon*nenv, 2)
-            vpreds = np.stack(vpreds, axis=1).reshape(horizon*nenv, 2)
-            news = np.stack(news, axis=1).reshape(horizon*nenv, 1)
-            yield {"ob" : obs, "rew" : rews, "vpred" : vpreds, "new" : news,
-                    "ac" : acs, "nextvpred": vpred * (1 - new.reshape(nenv, 1)),
-                    "ep_rets" : ep_rets, "ep_sfts" : ep_sfts, "ep_lens" : ep_lens, 
-                   }
-            _, vpred, _, _ = pi.step(ob, stochastic=stochastic)
-            # Be careful!!! if you change the downstream algorithm to aggregate
-            # several of these batches, then be sure to do a deepcopy
-            cur_ep_ret = 0
-            cur_ep_sft = 0
-            cur_ep_len = 0
-            ep_rets = []
-            ep_sfts = []
-            ep_lens = []
-            
-            obs, acs, rews, vpreds, news = [], [], [], [], []
-
-        ob, rew, new, info = env.step(ac)
-        sft = np.array([info[i]["s"] if "s" in info[i].keys() else 0.0 for i in range(nenv)])
-        rew_sft = np.stack([rew, sft], axis=1)
-
-        obs.append(ob)
-        acs.append(ac)
-        news.append(new)
-        rews.append(rew_sft)
-        vpreds.append(vpred)
-
-        cur_ep_ret += rew
-        cur_ep_sft += sft
-        cur_ep_len += np.ones(nenv)
-        if new.any():
-            i = np.where(new==1)
-            ep_rets.extend(cur_ep_ret[i].tolist())
-            ep_sfts.extend(cur_ep_sft[i].tolist())
-            ep_lens.extend(cur_ep_len[i].tolist())
-            cur_ep_ret[i] = 0
-            cur_ep_sft[i] = 0
-            cur_ep_len[i] = 0
-            # ob = env.reset()
-        t += 1
-
-def add_targ_and_adv(seg, gamma, lam):
-    new = np.append(seg["new"], 0) # last element is only used for last vtarg, but we already zeroed it if last new = 1
-    vpred = np.vstack([seg["vpred"], seg["nextvpred"]])
-    T = len(seg["rew"])
-    seg["adv"] = gaelam = np.empty([T, 2], 'float32')
-    rew = seg["rew"]
-    lastgaelam = 0
-    for t in reversed(range(T)):
-        nonterminal = 1-new[t+1]
-        delta = rew[t] + gamma * vpred[t+1] * nonterminal - vpred[t]
-        gaelam[t] = lastgaelam = delta + gamma * lam * nonterminal * lastgaelam
-
-    seg["tdlamret"] = seg["adv"] + seg["vpred"]
-    seg["sfeval"] = np.mean(seg["ep_sfts"])
-    seg["T"] = np.mean(seg["ep_lens"])
-
 def learn(*,
         network,
         env,
+        nsteps,
         total_timesteps,
-        timesteps_per_batch=1024, # what to train on
-        nsteps=144,
         max_kl=0.01,
         max_sf=1e10,
         cg_iters=10,
         gamma=0.995,
         lam=0.95, # advantage estimation
-        seed=None,
         ent_coef=0.0,
         cg_damping=1e-2,
         vf_stepsize=3e-4,
         vf_iters=3,
-        max_episodes=0, max_iters=0,  # time constraint
+        max_episodes=0,
+        max_iters=0,
+        seed=None,
         callback=None,
         load_path=None,
+        is_finite=True,
         comp_threshold=True,
         diff_threshold=False,
         attempt_feasible_recovery=True,
@@ -134,7 +53,7 @@ def learn(*,
         **network_kwargs
         ):
     '''
-    learn a policy function with TRPO algorithm
+    learn a policy function with Parallel CPO algorithm
 
     Parameters:
     ----------
@@ -195,7 +114,6 @@ def learn(*,
     ))
 
     policy = build_policy(env, network, **network_kwargs)
-    runner = Runner(env=env, policy=policy, nsteps=nsteps, gamma=gamma, lam=lam)
     set_global_seeds(seed)
 
     np.set_printoptions(precision=3)
@@ -301,7 +219,7 @@ def learn(*,
 
     # Prepare for rollouts
     # ----------------------------------------
-    # seg_gen = traj_segment_generator(pi, env, timesteps_per_batch, stochastic=True)
+    runner = Runner(env=env, policy=pi, nsteps=nsteps, gamma=gamma, lam=lam, is_finite=is_finite)
 
     global episodes_so_far, timesteps_so_far, iters_so_far
     eps = 1e-8
@@ -332,17 +250,15 @@ def learn(*,
         logger.log("********** Iteration %i ************"%iters_so_far)
 
         with timed("sampling"):
-            ob, returns, masks, actions, values, atarg, neglogpacs, states, epinfos = runner.run() #pylint: disable=E0632
-            atarg = (atarg - atarg.mean()) / (atarg.std() + eps) # standardized advantage function estimate
-            args = obs, actions, atarg, seg["T"]
-        #     seg = seg_gen.__next__()
-        # add_targ_and_adv(seg, gamma, lam)
+            obs, returns, masks, actions, values, advs, neglogpacs, states, epinfos = runner.run() #pylint: disable=E0632
+            ep_lens, ep_rets, ep_sfts = [],[],[]
+            for info in epinfos:
+                ep_lens.append(info['l'])
+                ep_rets.append(info['r'])
+                ep_sfts.append(info['s'])
+            advs = (advs - advs.mean()) / (advs.std() + eps) # standardized advantage function estimate
 
-        # # ob, ac, atarg, sfatarg, T = map(np.concatenate, (obs, acs, atargs, sfatarg, T))
-        # ob, ac, atarg, T = seg["ob"], seg["ac"], seg["adv"], seg["T"]
-        # atarg = (atarg - atarg.mean()) / (atarg.std() + eps) # standardized advantage function estimate
-
-        # args = seg["ob"], seg["ac"], atarg, seg["T"]
+        args = obs, actions, advs, np.mean(ep_lens)
         fvpargs = [arr[::5] for arr in args[:3]]
         def fisher_vector_product(p):
             return allmean(compute_fvp(p, *fvpargs)) + cg_damping * p
@@ -376,7 +292,7 @@ def learn(*,
         # logger.record_tabular("OptimDiagnostic_Residual",residual)
         # logger.record_tabular("OptimDiagnostic_Rescale", rescale)
 
-        S = seg["sfeval"]
+        S = np.mean(ep_sfts)
         c = S - max_sf
 
         if c > 0:
@@ -540,8 +456,8 @@ def learn(*,
         # Safety thershold
         threshold = max_sf
         if comp_threshold:
-            threshold = max(max_sf - seg["sfeval"], 0)
-            threshold = max(threshold - 1.0 * np.std(seg["adv"][:,1]), 0)
+            threshold = max(max_sf - np.mean(ep_sfts), 0)
+            threshold = max(threshold - 1.0 * np.std(advs[:,1]), 0)
         if diff_threshold:
             threshold += safetybefore
         logger.record_tabular("OptimDiagnostic_Threshold", threshold)
@@ -595,7 +511,7 @@ def learn(*,
 
         def wrap_up():
             global episodes_so_far, timesteps_so_far, iters_so_far
-            lrlocal = (seg["ep_lens"], seg["ep_rets"], seg["ep_sfts"]) # local values
+            lrlocal = (ep_lens, ep_rets, ep_sfts) # local values
             if MPI is not None:
                 listoflrpairs = MPI.COMM_WORLD.allgather(lrlocal) # list of tuples
             else:

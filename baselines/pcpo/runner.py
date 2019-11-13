@@ -10,12 +10,14 @@ class Runner(AbstractEnvRunner):
     run():
     - Make a mini batch
     """
-    def __init__(self, *, env, policy, nsteps, gamma, lam):
+    def __init__(self, *, env, policy, nsteps, gamma, lam, is_finite):
         super().__init__(env=env, model=policy, nsteps=nsteps)
         # Lambda used in GAE (General Advantage Estimation)
         self.lam = lam
         # Discount rate
         self.gamma = gamma
+        # Check if is finite MDP
+        self.is_finite = is_finite
 
     def run(self):
         # Here, we init the lists that will contain the mb of experiences
@@ -36,10 +38,12 @@ class Runner(AbstractEnvRunner):
             # Take actions in env and look the results
             # Infos contains a ton of useful informations
             self.obs[:], rewards, self.dones, infos = self.env.step(actions)
+            safety = []
             for info in infos:
                 maybeepinfo = info.get('episode')
+                safety.append(info.get('s'))
                 if maybeepinfo: epinfos.append(maybeepinfo)
-            mb_rewards.append(rewards)
+            mb_rewards.append(np.stack([rewards, safety], axis=1))
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
@@ -49,25 +53,23 @@ class Runner(AbstractEnvRunner):
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
         last_values = self.model.value(self.obs, S=self.states, M=self.dones)
 
-        print(mb_obs.shape, mb_actions.shape, mb_rewards.shape, mb_values.shape, mb_dones.shape)
-
         # discount/bootstrap off value fn
         mb_returns = np.zeros_like(mb_rewards)
         mb_advs = np.zeros_like(mb_rewards)
         lastgaelam = 0
         for t in reversed(range(self.nsteps)):
             if t == self.nsteps - 1:
-                nextnonterminal = 1.0 - self.dones
+                nextnonterminal = 1.0 - self.dones * self.is_finite
                 nextvalues = last_values
             else:
-                nextnonterminal = 1.0 - mb_dones[t+1]
+                nextnonterminal = 1.0 - mb_dones[t+1] * self.is_finite
                 nextvalues = mb_values[t+1]
-            delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
-            mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
+            delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal[:,None] - mb_values[t]
+            mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal[:,None] * lastgaelam
         mb_returns = mb_advs + mb_values
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_advs, mb_neglogpacs)),
             mb_states, epinfos)
-# obs, returns, masks, actions, values, neglogpacs, states = runner.run()
+
 def sf01(arr):
     """
     swap and then flatten axes 0 and 1
