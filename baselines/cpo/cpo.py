@@ -506,7 +506,7 @@ def learn(*,
                                                         # 2 : trust region partly intersects safe region, and current point is feasible
                                                         # 1 : trust region partly intersects safe region, and current point is infeasible
                                                         # 0 : trust region does not intersect safe region
-        logger.record_tabular("LagrangeLamda", lam) # dual variable for trust region
+        logger.record_tabular("LagrangeLamda", lm) # dual variable for trust region
         logger.record_tabular("LagrangeNu", nu)     # dual variable for safety constraint
         # logger.record_tabular("OptimDiagnostic_q",q) # approx = g^T H^{-1} g
         # logger.record_tabular("OptimDiagnostic_r",r) # approx = b^T H^{-1} g

@@ -30,10 +30,10 @@ def learn(*,
         total_timesteps,
         max_kl=0.01,
         max_sf=1e10,
-        cg_iters=10,
         gamma=0.995,
         lam=0.95, # advantage estimation
         ent_coef=0.0,
+        cg_iters=10,
         cg_damping=1e-2,
         vf_stepsize=3e-4,
         vf_iters=3,
@@ -219,7 +219,7 @@ def learn(*,
 
     # Prepare for rollouts
     # ----------------------------------------
-    runner = Runner(env=env, policy=pi, nsteps=nsteps, gamma=gamma, lam=lam, is_finite=is_finite)
+    runner = Runner(env=env, model=pi, nsteps=nsteps, gamma=gamma, lam=lam, is_finite=is_finite)
 
     global episodes_so_far, timesteps_so_far, iters_so_far
     eps = 1e-8
@@ -287,10 +287,10 @@ def learn(*,
         q = v.dot(approx_g) # approx = g^T H^{-1} g
         delta = 2 * max_kl
 
-        # residual = np.sqrt((approx_g - g).dot(approx_g - g))
-        # rescale  = q / (v.dot(v))
-        # logger.record_tabular("OptimDiagnostic_Residual",residual)
-        # logger.record_tabular("OptimDiagnostic_Rescale", rescale)
+        residual = np.sqrt((approx_g - g).dot(approx_g - g))
+        rescale  = q / (v.dot(v))
+        logger.record_tabular("OptimDiagnostic_Residual",residual)
+        logger.record_tabular("OptimDiagnostic_Rescale", rescale)
 
         S = np.mean(ep_sfts)
         c = S - max_sf
@@ -427,12 +427,12 @@ def learn(*,
                                                         # 0 : trust region does not intersect safe region
         logger.record_tabular("LagrangeLamda", lam) # dual variable for trust region
         logger.record_tabular("LagrangeNu", nu)     # dual variable for safety constraint
-        # logger.record_tabular("OptimDiagnostic_q",q) # approx = g^T H^{-1} g
-        # logger.record_tabular("OptimDiagnostic_r",r) # approx = b^T H^{-1} g
-        # logger.record_tabular("OptimDiagnostic_s",s) # approx = b^T H^{-1} b
-        # logger.record_tabular("OptimDiagnostic_c",c) # if > 0, constraint is violated
-        # logger.record_tabular("OptimDiagnostic_A",A) 
-        # logger.record_tabular("OptimDiagnostic_B",B)
+        logger.record_tabular("OptimDiagnostic_q",q) # approx = g^T H^{-1} g
+        logger.record_tabular("OptimDiagnostic_r",r) # approx = b^T H^{-1} g
+        logger.record_tabular("OptimDiagnostic_s",s) # approx = b^T H^{-1} b
+        logger.record_tabular("OptimDiagnostic_c",c) # if > 0, constraint is violated
+        logger.record_tabular("OptimDiagnostic_A",A) 
+        logger.record_tabular("OptimDiagnostic_B",B)
         logger.record_tabular("OptimDiagnostic_S",S)
         if nu == 0:
             logger.log("safety constraint is not active!")
