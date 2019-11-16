@@ -8,8 +8,16 @@ from baselines.common import set_global_seeds
 from baselines.common.mpi_adam import MpiAdam
 from baselines.common.input import observation_placeholder
 from baselines.pcpo.policies import build_policy
+from baselines.pcpo.model import Model
 from baselines.pcpo.runner import Runner
 from contextlib import contextmanager
+
+import gym
+from baselines.bench import Monitor
+from baselines.bench.monitor import load_results
+from baselines.common import retro_wrappers, set_global_seeds
+from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
+from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 
 try:
     from mpi4py import MPI
@@ -19,157 +27,147 @@ except ImportError:
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-def learn(*,
-        network,
-        env,
-        nsteps,
-        total_timesteps,
-        max_kl=0.01,
-        max_sf=1e10,
-        gamma=0.995,
-        lam=0.95, # advantage estimation
-        ent_coef=0.0,
-        cg_iters=10,
-        cg_damping=1e-2,
-        vf_stepsize=3e-4,
-        vf_iters=3,
-        max_episodes=0,
-        max_iters=0,
-        seed=None,
-        model_fn=None,
-        callback=None,
-        load_path=None,
-        is_finite=True,
-        **network_kwargs
-        ):
-    '''
-    learn a policy function with Parallel CPO algorithm
+class ClipActionsWrapper(gym.Wrapper):
+    def step(self, action):
+        try:
+            low, high = self.env.unwrapped._feasible_action()
+        except:
+            low, high = self.action_space.low, self.action_space.high
 
-    Parameters:
-    ----------
+        import numpy as np
+        action = np.nan_to_num(action)
+        action = np.clip(action, low, high)
+        return self.env.step(action)
 
-    network                 neural network to learn. Can be either string ('mlp', 'cnn', 'lstm', 'lnlstm' for basic types)
-                            or function that takes input placeholder and returns tuple (output, None) for feedforward nets
-                            or (output, (state_placeholder, state_output, mask_placeholder)) for recurrent nets
+    def reset(self, **kwargs):
+        return self.env.reset(**kwargs)
 
-    env                     environment (one of the gym environments or wrapped via baselines.common.vec_env.VecEnv-type class
+class PCPO(object):
+    """ Paralell CPO algorithm """
+    def __init__(self, network, env, nsteps, max_kl=0.01, max_sf=1e10, gamma=0.995, lam=0.95, ent_coef=0.0, 
+                cg_iters=10, cg_damping=1e-2, vf_stepsize=3e-4, vf_iters=3, num_env=1, seed=None, 
+                load_path=None, logger_dir=None, is_finite=True, **network_kwargs):
+        # Setup stuff
+        set_global_seeds(seed)
+        np.set_printoptions(precision=3)
 
-    total_timesteps         max number of timesteps
+        if isinstance(env, str):
+            env = self.make_vec_env(env, seed=seed, logger_dir=logger_dir, reward_scale=1.0, num_env=num_env)
+            policy = build_policy(env, network, **network_kwargs)
 
-    timesteps_per_batch     timesteps per gradient estimation batch
+        ob_space = env.observation_space
+        ac_space = env.action_space
 
-    max_kl                  max KL divergence between old policy and new policy ( KL(pi_old || pi) )
+        # Instantiate the model object and runner object
+        model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, ent_coef=ent_coef,
+                      vf_stepsize=vf_stepsize, vf_iters=vf_iters, load_path=load_path, 
+                      cg_damping=cg_damping, cg_iters=cg_iters, max_kl=max_kl, max_sf=max_sf)
+        runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam, is_finite=is_finite)
 
-    max_sf                  max safety constraint value
+        self.model = model
+        self.runner = runner
+        self.total_episodes = 0
+        self.total_timesteps = 0
+        self.total_iters = 0
+        self.tstart = time.time()
+        self.lenbuffer = deque(maxlen=40) # rolling buffer for episode lengths
+        self.rewbuffer = deque(maxlen=40) # rolling buffer for episode rewards
+        self.sftbuffer = deque(maxlen=40) # rolling buffer for episode safety
 
-    ent_coef                coefficient of policy entropy term in the optimization objective
+    def train(self, timesteps=0, episodes=0, iters=0):
+        if sum([timesteps>0, episodes>0, iters>0])==0:
+            # noththing to be done
+            return
 
-    cg_iters                number of iterations of conjugate gradient algorithm
+        assert sum([timesteps>0, episodes>0, iters>0]) < 2, \
+            'out of iters, timesteps, and episodes only one should be specified'
 
-    cg_damping              conjugate gradient damping
+        timesteps_so_far, episodes_so_far, iters_so_far = 0, 0, 0
+        while True:
+            if timesteps and timesteps_so_far >= timesteps:
+                break
+            elif episodes and episodes_so_far >= episodes:
+                break
+            elif iters and iters_so_far >= iters:
+                break
+            logger.log("********** Iteration %i ************"%self.total_iters)
 
-    vf_stepsize             learning rate for adam optimizer used to optimie value function loss
+            with self.model.timed("sampling"):
+                obs, returns, masks, actions, values, advs, neglogpacs, states, epinfos = self.runner.run() #pylint: disable=E0632
+                ep_lens, ep_rets, ep_sfts = [],[],[]
+                for info in epinfos:
+                    ep_lens.append(info['l'])
+                    ep_rets.append(info['r'])
+                    ep_sfts.append(info['s'])
 
-    vf_iters                number of iterations of value function optimization iterations per each policy optimization step
+            self.model.train(obs, returns, masks, actions, values, advs, neglogpacs, states, ep_lens, ep_rets, ep_sfts)
 
-    max_episodes            max number of episodes
+            lrlocal = (ep_lens, ep_rets, ep_sfts) # local values
+            if MPI is not None:
+                listoflrpairs = MPI.COMM_WORLD.allgather(lrlocal) # list of tuples
+            else:
+                listoflrpairs = [lrlocal]
 
-    max_iters               maximum number of policy optimization iterations
+            lens, rews, sfts = map(flatten_lists, zip(*listoflrpairs))
+            self.lenbuffer.append(np.mean(lens))
+            self.rewbuffer.append(np.mean(rews))
+            self.sftbuffer.append(np.mean(sfts))
 
-    callback                function to be called with (locals(), globals()) each policy optimization step
+            logger.record_tabular("EpLenMean", np.mean(self.lenbuffer))
+            logger.record_tabular("EpRewMean", np.mean(self.rewbuffer))
+            logger.record_tabular("EpSftMean", np.mean(self.sftbuffer))
 
-    load_path               str, path to load the model from (default: None, i.e. no model is loaded)
+            episodes_so_far += len(lens)
+            timesteps_so_far += sum(lens)
+            iters_so_far += 1
 
-    **network_kwargs        keyword arguments to the policy / network builder. See baselines.common/policies.py/build_policy and arguments to a particular type of network
+            self.total_episodes += len(lens)
+            self.total_timesteps += sum(lens)
+            self.total_iters += 1
 
-    Returns:
-    -------
+            logger.record_tabular("EpisodesSoFar", self.total_episodes)
+            logger.record_tabular("TimestepsSoFar", self.total_timesteps)
+            logger.record_tabular("TimeElapsed", time.time() - self.tstart)
+            logger.dump_tabular()
 
-    learnt model
+    def make_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, mpi_rank=0, subrank=0):
+        """
+        Create a wrapped, monitored gym.Env for safety.
+        """
+        env = gym.make(env_id, **{"train":train})
+        env.seed(seed + subrank if seed is not None else None)
+        env = Monitor(env, 
+                    logger_dir and os.path.join(logger_dir, str(mpi_rank) + '.' + str(subrank)),
+                    allow_early_resets=True)
+        env.seed(seed)
+        env = ClipActionsWrapper(env)
+        if reward_scale != 1.0:
+            from baselines.common.retro_wrappers import RewardScaler
+            env = RewardScaler(env, reward_scale)
+        return env
 
-    '''
-    # Setup stuff
-    # ----------------------------------------
-    set_global_seeds(seed)
-    np.set_printoptions(precision=3)
-    total_timesteps = int(total_timesteps)
-
-    policy = build_policy(env, network, **network_kwargs)
-
-    ob_space = env.observation_space
-    ac_space = env.action_space
-
-    # Instantiate the model object (that creates act_model and train_model)
-    if model_fn is None:
-        from baselines.pcpo.model import Model
-        model_fn = Model
-
-    model = model_fn(policy=policy, ob_space=ob_space, ac_space=ac_space, ent_coef=ent_coef,
-                vf_stepsize=vf_stepsize, vf_iters=vf_iters, load_path=load_path, 
-                cg_damping=cg_damping, cg_iters=cg_iters, max_kl=max_kl, max_sf=max_sf)
-
-    runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam, is_finite=is_finite)
-
-    episodes_so_far = 0
-    timesteps_so_far = 0
-    iters_so_far = 0
-    tstart = time.time()
-    lenbuffer = deque(maxlen=40) # rolling buffer for episode lengths
-    rewbuffer = deque(maxlen=40) # rolling buffer for episode rewards
-    sftbuffer = deque(maxlen=40) # rolling buffer for episode safety
-
-    if sum([max_iters>0, total_timesteps>0, max_episodes>0])==0:
-        # noththing to be done
-        return model
-
-    assert sum([max_iters>0, total_timesteps>0, max_episodes>0]) < 2, \
-        'out of max_iters, total_timesteps, and max_episodes only one should be specified'
-
-    while True:
-        if callback: callback(locals(), globals())
-        if total_timesteps and timesteps_so_far >= total_timesteps:
-            break
-        elif max_episodes and episodes_so_far >= max_episodes:
-            break
-        elif max_iters and iters_so_far >= max_iters:
-            break
-        logger.log("********** Iteration %i ************"%iters_so_far)
-
-        with model.timed("sampling"):
-            obs, returns, masks, actions, values, advs, neglogpacs, states, epinfos = runner.run() #pylint: disable=E0632
-            ep_lens, ep_rets, ep_sfts = [],[],[]
-            for info in epinfos:
-                ep_lens.append(info['l'])
-                ep_rets.append(info['r'])
-                ep_sfts.append(info['s'])
-
-        model.train(obs, returns, masks, actions, values, advs, neglogpacs, states, ep_lens, ep_rets, ep_sfts)
-
-        lrlocal = (ep_lens, ep_rets, ep_sfts) # local values
-        if MPI is not None:
-            listoflrpairs = MPI.COMM_WORLD.allgather(lrlocal) # list of tuples
+    def make_vec_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, num_env=1):
+        """
+        Create a wrapped, monitored SubprocVecEnv for Atari and MuJoCo.
+        """
+        mpi_rank = MPI.COMM_WORLD.Get_rank() if MPI else 0
+        seed = seed + 10000 * mpi_rank if seed is not None else None
+        logger_dir = logger.get_dir()
+        def make_thunk(rank, initializer=None):
+            return lambda: self.make_env(
+                env_id,
+                seed,
+                train=True,
+                logger_dir=None,
+                reward_scale=reward_scale,
+                mpi_rank=mpi_rank,
+                subrank=0
+            )
+        set_global_seeds(seed)
+        if num_env == 1:
+            return DummyVecEnv([make_thunk(i) for i in range(num_env)])
         else:
-            listoflrpairs = [lrlocal]
-
-        lens, rews, sfts = map(flatten_lists, zip(*listoflrpairs))
-        lenbuffer.append(np.mean(lens))
-        rewbuffer.append(np.mean(rews))
-        sftbuffer.append(np.mean(sfts))
-
-        logger.record_tabular("EpLenMean", np.mean(lenbuffer))
-        logger.record_tabular("EpRewMean", np.mean(rewbuffer))
-        logger.record_tabular("EpSftMean", np.mean(sftbuffer))
-
-        episodes_so_far += len(lens)
-        timesteps_so_far += sum(lens)
-        iters_so_far += 1
-
-        logger.record_tabular("EpisodesSoFar", episodes_so_far)
-        logger.record_tabular("TimestepsSoFar", timesteps_so_far)
-        logger.record_tabular("TimeElapsed", time.time() - tstart)
-        logger.dump_tabular()
-
-    return model.pi
+            return SubprocVecEnv([make_thunk(i) for i in range(num_env)])
 
 def flatten_lists(listoflists):
     return [el for list_ in listoflists for el in list_]

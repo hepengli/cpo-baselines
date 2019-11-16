@@ -141,7 +141,10 @@ baselines/her/experiment/config.py
 baselines/her/experiment/play.py
 baselines/her/experiment/plot.py
 baselines/pcpo/__init__.py
+baselines/pcpo/model.py
 baselines/pcpo/pcpo.py
+baselines/pcpo/pcpo2.py
+baselines/pcpo/pcpo_agent.py
 baselines/pcpo/policies.py
 baselines/pcpo/runner.py
 baselines/ppo1/__init__.py
