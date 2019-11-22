@@ -140,6 +140,14 @@ baselines/her/experiment/__init__.py
 baselines/her/experiment/config.py
 baselines/her/experiment/play.py
 baselines/her/experiment/plot.py
+baselines/macpo/__init__.py
+baselines/macpo/macpo.py
+baselines/macpo/model.py
+baselines/macpo/pcpo.py
+baselines/macpo/pcpo2.py
+baselines/macpo/policies.py
+baselines/macpo/runner.py
+baselines/macpo/values.py
 baselines/pcpo/__init__.py
 baselines/pcpo/model.py
 baselines/pcpo/pcpo.py

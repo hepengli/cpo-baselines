@@ -112,7 +112,7 @@ class ResultsWriter(object):
         if isinstance(header, dict):
             header = '# {} \n'.format(json.dumps(header))
         self.f.write(header)
-        self.logger = csv.DictWriter(self.f, fieldnames=('r', 'l', 't')+tuple(extra_keys))
+        self.logger = csv.DictWriter(self.f, fieldnames=('r', 'l', 't', 's')+tuple(extra_keys))
         self.logger.writeheader()
         self.f.flush()
 

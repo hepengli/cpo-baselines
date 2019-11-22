@@ -7,9 +7,9 @@ from baselines import logger
 from baselines.common import set_global_seeds
 from baselines.common.mpi_adam import MpiAdam
 from baselines.common.input import observation_placeholder
-from baselines.pcpo.policies import build_policy
-from baselines.pcpo.model import Model
-from baselines.pcpo.runner import Runner
+from baselines.macpo.policies import build_policy
+from baselines.macpo.model import Model
+from baselines.macpo.runner import Runner
 from contextlib import contextmanager
 
 import gym
@@ -45,23 +45,24 @@ class ClipActionsWrapper(gym.Wrapper):
 class PCPO(object):
     """ Paralell CPO algorithm """
     def __init__(self, network, env, nsteps, max_kl=0.01, max_sf=1e10, gamma=0.995, lam=0.95, ent_coef=0.0, 
-                cg_iters=10, cg_damping=1e-2, vf_stepsize=3e-4, vf_iters=3, num_env=1, seed=None, 
-                load_path=None, logger_dir=None, is_finite=True, **network_kwargs):
+                cg_iters=10, cg_damping=1e-2, qf_stepsize=3e-4, qf_iters=3, vf_stepsize=3e-4, vf_iters=3, 
+                num_env=1, seed=None, load_path=None, logger_dir=None, is_finite=True, name_scope=None, **network_kwargs):
         # Setup stuff
         set_global_seeds(seed)
         np.set_printoptions(precision=3)
 
         if isinstance(env, str):
             env = self.make_vec_env(env, seed=seed, logger_dir=logger_dir, reward_scale=1.0, num_env=num_env)
-            policy = build_policy(env, network, **network_kwargs)
 
         ob_space = env.observation_space
         ac_space = env.action_space
 
+        policy = build_policy(env, network, **network_kwargs)
+
         # Instantiate the model object and runner object
-        model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, ent_coef=ent_coef,
-                      vf_stepsize=vf_stepsize, vf_iters=vf_iters, load_path=load_path, 
-                      cg_damping=cg_damping, cg_iters=cg_iters, max_kl=max_kl, max_sf=max_sf)
+        model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, ent_coef=ent_coef, name_scope=name_scope,
+                      qf_stepsize=qf_stepsize, qf_iters=qf_iters, vf_stepsize=vf_stepsize, vf_iters=vf_iters, 
+                      load_path=load_path, cg_damping=cg_damping, cg_iters=cg_iters, max_kl=max_kl, max_sf=max_sf)
         runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam, is_finite=is_finite)
 
         self.env = env
@@ -94,14 +95,14 @@ class PCPO(object):
             logger.log("********** Iteration %i ************"%self.total_iters)
 
             with self.model.timed("sampling"):
-                obs, returns, masks, actions, values, advs, neglogpacs, states, epinfos = self.runner.run() #pylint: disable=E0632
+                obs, returns, masks, actions, values, advs, neglogpacs, oobs, q_values, states, epinfos,  = self.runner.run() #pylint: disable=E0632
                 ep_lens, ep_rets, ep_sfts = [],[],[]
                 for info in epinfos:
                     ep_lens.append(info['l'])
                     ep_rets.append(info['r'])
                     ep_sfts.append(info['s'])
 
-            self.model.train(obs, returns, masks, actions, values, advs, neglogpacs, states, ep_lens, ep_rets, ep_sfts)
+            self.model.train(obs, returns, masks, actions, values, advs, neglogpacs, oobs, q_values, states, ep_lens, ep_rets, ep_sfts)
 
             lrlocal = (ep_lens, ep_rets, ep_sfts) # local values
             if MPI is not None:
@@ -130,6 +131,8 @@ class PCPO(object):
             logger.record_tabular("TimestepsSoFar", self.total_timesteps)
             logger.record_tabular("TimeElapsed", time.time() - self.tstart)
             logger.dump_tabular()
+
+            # self.env.envs[0].unwrapped.render()
 
     def make_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, mpi_rank=0, subrank=0):
         """
@@ -164,10 +167,8 @@ class PCPO(object):
                 subrank=0
             )
         set_global_seeds(seed)
-        if num_env == 1:
-            return DummyVecEnv([make_thunk(i) for i in range(num_env)])
-        else:
-            return SubprocVecEnv([make_thunk(i) for i in range(num_env)])
+
+        return DummyVecEnv([make_thunk(i) for i in range(num_env)])
 
 def flatten_lists(listoflists):
     return [el for list_ in listoflists for el in list_]
