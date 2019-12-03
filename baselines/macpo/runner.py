@@ -19,12 +19,12 @@ class Runner(AbstractEnvRunner):
         # Check if is finite MDP
         self.is_finite = is_finite
 
-    def run(self):
+    def run(self, op_model):
         # Here, we init the lists that will contain the mb of experiences
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
-        mb_oobs, mb_q_values = [self.obs.copy()], []
         mb_states = self.states
-        epinfos = []
+        epinfos, ep_obs, ep_values = [], [ob for ob in self.obs.copy()], []
+
         # For n in range number of steps
         for _ in range(self.nsteps):
             # Given observations, get action value and neglopacs
@@ -38,28 +38,28 @@ class Runner(AbstractEnvRunner):
 
             # Take actions in env and look the results
             # Infos contains a ton of useful informations
-            self.obs[:], rewards, self.dones, infos = self.env.step(actions)
+            if self.model.name_scope == 'rg':
+                op_actions, op_values, _, _ = op_model.step(self.obs)
+            elif self.model.name_scope == 'em':
+                op_actions = np.zeros(shape=[self.env.num_envs, 1])
+                op_values = op_model.pi.q_value(self.obs)
+
+            self.obs[:], rewards, self.dones, infos = self.env.step(actions, op_actions, op_values)
             safety = []
-            for info in infos:
+            for n, info in enumerate(infos):
                 maybeepinfo = info.get('episode')
                 safety.append(info.get('s'))
                 if maybeepinfo:
                     epinfos.append(maybeepinfo)
+                    ep_values.append(info.get('reg'))
+                    ep_obs.append(self.obs[n])
             mb_rewards.append(np.stack([rewards, safety], axis=1))
 
-            if self.dones[0]:
-                reg_values = []
-                for info in infos:
-                    reg_values.append(info.get('reg'))
-
-                mb_q_values.append(reg_values)
-                mb_oobs.append(self.obs.copy())
+        ep_obs[-self.env.num_envs:] = []
+        ep_obs = np.asarray(ep_obs, dtype=self.obs.dtype)
+        ep_values = np.asarray(ep_values, dtype=self.obs.dtype)
 
         #batch of steps to batch of rollouts
-        mb_oobs.pop()
-        mb_oobs = np.asarray(mb_oobs, dtype=self.obs.dtype)
-        mb_q_values = np.asarray(mb_q_values, dtype=np.float32)
-
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
         mb_actions = np.asarray(mb_actions)
@@ -83,8 +83,8 @@ class Runner(AbstractEnvRunner):
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal[:,None] * lastgaelam
         mb_returns = mb_advs + mb_values
 
-        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_advs, mb_neglogpacs, mb_oobs, mb_q_values)),
-            mb_states, epinfos)
+        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_advs, mb_neglogpacs)),
+            mb_states, epinfos, ep_obs, ep_values)
 
 def sf01(arr):
     """

@@ -18,6 +18,7 @@ from baselines.bench.monitor import load_results
 from baselines.common import retro_wrappers, set_global_seeds
 from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+from baselines.macpo.shmem_vec_env import ShmemVecEnv
 
 try:
     from mpi4py import MPI
@@ -28,7 +29,7 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 class ClipActionsWrapper(gym.Wrapper):
-    def step(self, action):
+    def step(self, action, **kwargs):
         try:
             low, high = self.env.unwrapped._feasible_action()
         except:
@@ -37,7 +38,7 @@ class ClipActionsWrapper(gym.Wrapper):
         import numpy as np
         action = np.nan_to_num(action)
         action = np.clip(action, low, high)
-        return self.env.step(action)
+        return self.env.step(action, **kwargs)
 
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
@@ -51,7 +52,9 @@ class PCPO(object):
         set_global_seeds(seed)
         np.set_printoptions(precision=3)
 
-        if isinstance(env, str):
+        if isinstance(env, gym.Env):
+            env = env
+        elif isinstance(env, str):
             env = self.make_vec_env(env, seed=seed, logger_dir=logger_dir, reward_scale=1.0, num_env=num_env)
 
         ob_space = env.observation_space
@@ -76,7 +79,7 @@ class PCPO(object):
         self.rewbuffer = deque(maxlen=40) # rolling buffer for episode rewards
         self.sftbuffer = deque(maxlen=40) # rolling buffer for episode safety
 
-    def train(self, timesteps=0, episodes=0, iters=0):
+    def train(self, op_model, timesteps=0, episodes=0, iters=0):
         if sum([timesteps>0, episodes>0, iters>0])==0:
             # noththing to be done
             return
@@ -95,14 +98,14 @@ class PCPO(object):
             logger.log("********** Iteration %i ************"%self.total_iters)
 
             with self.model.timed("sampling"):
-                obs, returns, masks, actions, values, advs, neglogpacs, oobs, q_values, states, epinfos,  = self.runner.run() #pylint: disable=E0632
+                obs, returns, masks, actions, values, advs, neglogpacs, states, epinfos, ep_obs, ep_values,  = self.runner.run(op_model) #pylint: disable=E0632
                 ep_lens, ep_rets, ep_sfts = [],[],[]
                 for info in epinfos:
                     ep_lens.append(info['l'])
                     ep_rets.append(info['r'])
                     ep_sfts.append(info['s'])
 
-            self.model.train(obs, returns, masks, actions, values, advs, neglogpacs, oobs, q_values, states, ep_lens, ep_rets, ep_sfts)
+            self.model.train(obs, returns, masks, actions, values, advs, ep_obs, ep_values, ep_lens, ep_rets, ep_sfts)
 
             lrlocal = (ep_lens, ep_rets, ep_sfts) # local values
             if MPI is not None:
@@ -168,7 +171,7 @@ class PCPO(object):
             )
         set_global_seeds(seed)
 
-        return DummyVecEnv([make_thunk(i) for i in range(num_env)])
+        return ShmemVecEnv([make_thunk(i) for i in range(num_env)])
 
 def flatten_lists(listoflists):
     return [el for list_ in listoflists for el in list_]

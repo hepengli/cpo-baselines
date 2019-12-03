@@ -157,7 +157,7 @@ class Model(object):
         self.vfadam.sync()
         print("Init param sum", th_init.sum(), flush=True)
 
-    def train(self, obs, returns, masks, actions, values, advs, neglogpacs, oobs, q_values, states, ep_lens, ep_rets, ep_sfts):
+    def train(self, obs, returns, masks, actions, values, advs, ep_obs, ep_values, ep_lens, ep_rets, ep_sfts):
         # some constants
         eps = 1e-8
         backtrack_ratio = 0.8
@@ -188,9 +188,9 @@ class Model(object):
             # update Q network
             with self.timed("qf"):
                 for _ in range(self.qf_iters):
-                    for (mboob, mbq) in dataset.iterbatches((oobs, q_values),
+                    for (mbopob, mbopvalue) in dataset.iterbatches((ep_obs, ep_values),
                     include_final_partial_batch=False, batch_size=64):
-                        g = self.allmean(self.compute_qflossandgrad(mboob, mbq))
+                        g = self.allmean(self.compute_qflossandgrad(mbopob, mbopvalue))
                         self.qfadam.update(g, self.qf_stepsize)
 
         # compute loss and safety gradients
