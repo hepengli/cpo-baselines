@@ -1,5 +1,6 @@
 import numpy as np
 from baselines.common.runners import AbstractEnvRunner
+import time
 
 class Runner(AbstractEnvRunner):
     """
@@ -10,20 +11,21 @@ class Runner(AbstractEnvRunner):
     run():
     - Make a mini batch
     """
-    def __init__(self, *, env, model, nsteps, gamma, lam, is_finite):
+    def __init__(self, *, env, model, nsteps, gamma, lam):
         super().__init__(env=env, model=model, nsteps=nsteps)
         # Lambda used in GAE (General Advantage Estimation)
         self.lam = lam
         # Discount rate
         self.gamma = gamma
-        # Check if is finite MDP
-        self.is_finite = is_finite
 
     def run(self, op_model):
         # Here, we init the lists that will contain the mb of experiences
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
         mb_states = self.states
         epinfos, ep_obs, ep_values = [], [ob for ob in self.obs.copy()], []
+
+        if self.model.name_scope == 'rg':
+            op_actions, op_values, _, _ = op_model.step(self.obs)
 
         # For n in range number of steps
         for _ in range(self.nsteps):
@@ -38,13 +40,17 @@ class Runner(AbstractEnvRunner):
 
             # Take actions in env and look the results
             # Infos contains a ton of useful informations
-            if self.model.name_scope == 'rg':
-                op_actions, op_values, _, _ = op_model.step(self.obs)
-            elif self.model.name_scope == 'em':
+            if self.model.name_scope == 'em':
                 op_actions = np.zeros(shape=[self.env.num_envs, 1])
                 op_values = op_model.pi.q_value(self.obs)
 
             self.obs[:], rewards, self.dones, infos = self.env.step(actions, op_actions, op_values)
+
+            if self.model.name_scope == 'rg':
+                if np.all(self.dones):
+                    op_actions, op_values, _, _ = op_model.step(self.obs)
+                    rewards += op_values[:,0]
+
             safety = []
             for n, info in enumerate(infos):
                 maybeepinfo = info.get('episode')
@@ -74,10 +80,10 @@ class Runner(AbstractEnvRunner):
         lastgaelam = 0
         for t in reversed(range(self.nsteps)):
             if t == self.nsteps - 1:
-                nextnonterminal = 1.0 - self.dones * self.is_finite
+                nextnonterminal = 1.0 - self.dones
                 nextvalues = last_values
             else:
-                nextnonterminal = 1.0 - mb_dones[t+1] * self.is_finite
+                nextnonterminal = 1.0 - mb_dones[t+1]
                 nextvalues = mb_values[t+1]
             delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal[:,None] - mb_values[t]
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal[:,None] * lastgaelam

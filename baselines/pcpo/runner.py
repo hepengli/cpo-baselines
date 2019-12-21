@@ -10,14 +10,12 @@ class Runner(AbstractEnvRunner):
     run():
     - Make a mini batch
     """
-    def __init__(self, *, env, model, nsteps, gamma, lam, is_finite):
+    def __init__(self, *, env, model, nsteps, gamma, lam):
         super().__init__(env=env, model=model, nsteps=nsteps)
         # Lambda used in GAE (General Advantage Estimation)
         self.lam = lam
         # Discount rate
         self.gamma = gamma
-        # Check if is finite MDP
-        self.is_finite = is_finite
 
     def run(self):
         # Here, we init the lists that will contain the mb of experiences
@@ -41,7 +39,10 @@ class Runner(AbstractEnvRunner):
             safety = []
             for info in infos:
                 maybeepinfo = info.get('episode')
-                safety.append(info.get('s'))
+                if info.get('s') is not None:
+                    safety.append(info.get('s'))
+                else:
+                    safety.append(0.0)
                 if maybeepinfo: epinfos.append(maybeepinfo)
             mb_rewards.append(np.stack([rewards, safety], axis=1))
         #batch of steps to batch of rollouts
@@ -59,10 +60,10 @@ class Runner(AbstractEnvRunner):
         lastgaelam = 0
         for t in reversed(range(self.nsteps)):
             if t == self.nsteps - 1:
-                nextnonterminal = 1.0 - self.dones * self.is_finite
+                nextnonterminal = 1.0 - self.dones
                 nextvalues = last_values
             else:
-                nextnonterminal = 1.0 - mb_dones[t+1] * self.is_finite
+                nextnonterminal = 1.0 - mb_dones[t+1]
                 nextvalues = mb_values[t+1]
             delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal[:,None] - mb_values[t]
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal[:,None] * lastgaelam

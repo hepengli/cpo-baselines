@@ -42,7 +42,6 @@ def learn(*,
         seed=None,
         callback=None,
         load_path=None,
-        is_finite=True,
         comp_threshold=True,
         diff_threshold=False,
         attempt_feasible_recovery=True,
@@ -219,7 +218,7 @@ def learn(*,
 
     # Prepare for rollouts
     # ----------------------------------------
-    runner = Runner(env=env, model=pi, nsteps=nsteps, gamma=gamma, lam=lam, is_finite=is_finite)
+    runner = Runner(env=env, model=pi, nsteps=nsteps, gamma=gamma, lam=lam)
 
     global episodes_so_far, timesteps_so_far, iters_so_far
     eps = 1e-8

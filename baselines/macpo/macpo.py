@@ -47,7 +47,7 @@ class PCPO(object):
     """ Paralell CPO algorithm """
     def __init__(self, network, env, nsteps, max_kl=0.01, max_sf=1e10, gamma=0.995, lam=0.95, ent_coef=0.0, 
                 cg_iters=10, cg_damping=1e-2, qf_stepsize=3e-4, qf_iters=3, vf_stepsize=3e-4, vf_iters=3, 
-                num_env=1, seed=None, load_path=None, logger_dir=None, is_finite=True, name_scope=None, **network_kwargs):
+                num_env=1, seed=None, train=True, load_path=None, logger_dir=None, name_scope=None, **network_kwargs):
         # Setup stuff
         set_global_seeds(seed)
         np.set_printoptions(precision=3)
@@ -55,7 +55,7 @@ class PCPO(object):
         if isinstance(env, gym.Env):
             env = env
         elif isinstance(env, str):
-            env = self.make_vec_env(env, seed=seed, logger_dir=logger_dir, reward_scale=1.0, num_env=num_env)
+            env = self.make_vec_env(env, seed=seed, train=train, logger_dir=logger_dir, reward_scale=1.0, num_env=num_env)
 
         ob_space = env.observation_space
         ac_space = env.action_space
@@ -66,7 +66,7 @@ class PCPO(object):
         model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, ent_coef=ent_coef, name_scope=name_scope,
                       qf_stepsize=qf_stepsize, qf_iters=qf_iters, vf_stepsize=vf_stepsize, vf_iters=vf_iters, 
                       load_path=load_path, cg_damping=cg_damping, cg_iters=cg_iters, max_kl=max_kl, max_sf=max_sf)
-        runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam, is_finite=is_finite)
+        runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
 
         self.env = env
         self.model = model
@@ -171,7 +171,10 @@ class PCPO(object):
             )
         set_global_seeds(seed)
 
-        return ShmemVecEnv([make_thunk(i) for i in range(num_env)])
+        if num_env == 1:
+            return DummyVecEnv([make_thunk(i) for i in range(num_env)])
+        else:
+            return ShmemVecEnv([make_thunk(i) for i in range(num_env)])
 
 def flatten_lists(listoflists):
     return [el for list_ in listoflists for el in list_]
