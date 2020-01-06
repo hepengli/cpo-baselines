@@ -45,14 +45,14 @@ class ClipActionsWrapper(gym.Wrapper):
 class PCPO(object):
     """ Paralell CPO algorithm """
     def __init__(self, network, env, nsteps, max_kl=0.01, max_sf=1e10, gamma=0.995, lam=0.95, 
-                ent_coef=0.0, cg_iters=10, cg_damping=1e-2, vf_stepsize=3e-4, vf_iters=3, 
-                num_env=1, seed=None, load_path=None, logger_dir=None, **network_kwargs):
+                ent_coef=0.0, cg_iters=10, cg_damping=1e-2, vf_stepsize=3e-4, vf_iters=3, num_env=1,
+                seed=None, load_path=None, logger_dir=None, force_dummy=False, **network_kwargs):
         # Setup stuff
         set_global_seeds(seed)
         np.set_printoptions(precision=3)
 
         if isinstance(env, str):
-            env = self.make_vec_env(env, seed=seed, logger_dir=logger_dir, reward_scale=1.0, num_env=num_env)
+            env = self.make_vec_env(env, seed=seed, logger_dir=logger_dir, reward_scale=1.0, num_env=num_env, force_dummy=force_dummy)
             policy = build_policy(env, network, **network_kwargs)
 
         ob_space = env.observation_space
@@ -147,7 +147,7 @@ class PCPO(object):
             env = RewardScaler(env, reward_scale)
         return env
 
-    def make_vec_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, num_env=1):
+    def make_vec_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, num_env=1, force_dummy=False):
         """
         Create a wrapped, monitored SubprocVecEnv for Atari and MuJoCo.
         """
@@ -161,13 +161,13 @@ class PCPO(object):
                 logger_dir=logger_dir,
                 reward_scale=reward_scale,
                 mpi_rank=mpi_rank,
-                subrank=0
+                subrank=rank,
             )
         set_global_seeds(seed)
-        if num_env == 1:
-            return DummyVecEnv([make_thunk(i) for i in range(num_env)])
-        else:
+        if not force_dummy and num_env > 1:
             return SubprocVecEnv([make_thunk(i) for i in range(num_env)])
+        else:
+            return DummyVecEnv([make_thunk(i) for i in range(num_env)])
 
 def flatten_lists(listoflists):
     return [el for list_ in listoflists for el in list_]
