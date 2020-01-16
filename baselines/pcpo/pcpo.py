@@ -137,10 +137,9 @@ class PCPO(object):
         """
         env = gym.make(env_id, **{"train":train})
         env.seed(seed + subrank if seed is not None else None)
-        env = Monitor(env, 
+        env = Monitor(env,
                     logger_dir and os.path.join(logger_dir, str(mpi_rank) + '.' + str(subrank)),
                     allow_early_resets=True)
-        env.seed(seed)
         env = ClipActionsWrapper(env)
         if reward_scale != 1.0:
             from baselines.common.retro_wrappers import RewardScaler
