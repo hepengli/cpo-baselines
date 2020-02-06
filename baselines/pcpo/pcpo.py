@@ -44,15 +44,15 @@ class ClipActionsWrapper(gym.Wrapper):
 
 class PCPO(object):
     """ Paralell CPO algorithm """
-    def __init__(self, network, env, nsteps, max_kl=0.01, max_sf=1e10, gamma=0.995, lam=0.95, 
-                ent_coef=0.0, cg_iters=10, cg_damping=1e-2, vf_stepsize=3e-4, vf_iters=3, num_env=1,
-                seed=None, load_path=None, logger_dir=None, force_dummy=False, **network_kwargs):
+    def __init__(self, network, env, nsteps, max_kl=0.01, max_sf=1e10, gamma=0.995, lam=0.95, ent_coef=0.0, 
+                cg_iters=10, cg_damping=1e-2, vf_stepsize=3e-4, vf_iters=3, num_env=1, seed=None, 
+                load_path=None, logger_dir=None, force_dummy=False, info_keywords=(), **network_kwargs):
         # Setup stuff
         set_global_seeds(seed)
         np.set_printoptions(precision=3)
 
         if isinstance(env, str):
-            env = self.make_vec_env(env, seed=seed, logger_dir=logger_dir, reward_scale=1.0, num_env=num_env, force_dummy=force_dummy)
+            env = self.make_vec_env(env, seed=seed, logger_dir=logger_dir, num_env=num_env, force_dummy=force_dummy, info_keywords=info_keywords)
             policy = build_policy(env, network, **network_kwargs)
 
         ob_space = env.observation_space
@@ -131,7 +131,7 @@ class PCPO(object):
             logger.record_tabular("TimeElapsed", time.time() - self.tstart)
             logger.dump_tabular()
 
-    def make_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, mpi_rank=0, subrank=0):
+    def make_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, mpi_rank=0, subrank=0, info_keywords=()):
         """
         Create a wrapped, monitored gym.Env for safety.
         """
@@ -139,14 +139,15 @@ class PCPO(object):
         env.seed(seed + subrank if seed is not None else None)
         env = Monitor(env,
                     logger_dir and os.path.join(logger_dir, str(mpi_rank) + '.' + str(subrank)),
-                    allow_early_resets=True)
+                    allow_early_resets=True,
+                    info_keywords=info_keywords)
         env = ClipActionsWrapper(env)
         if reward_scale != 1.0:
             from baselines.common.retro_wrappers import RewardScaler
             env = RewardScaler(env, reward_scale)
         return env
 
-    def make_vec_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, num_env=1, force_dummy=False):
+    def make_vec_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, num_env=1, force_dummy=False, info_keywords=()):
         """
         Create a wrapped, monitored SubprocVecEnv for Atari and MuJoCo.
         """
@@ -161,6 +162,7 @@ class PCPO(object):
                 reward_scale=reward_scale,
                 mpi_rank=mpi_rank,
                 subrank=rank,
+                info_keywords=info_keywords,
             )
         set_global_seeds(seed)
         if not force_dummy and num_env > 1:

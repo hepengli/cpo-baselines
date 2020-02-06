@@ -321,7 +321,7 @@ class MixedPd(Pd):
         assert isinstance(other, MixedPd)
         return self.BernoulliPd.kl(other.BernoulliPd) + self.DiagGaussianPd.kl(other.DiagGaussianPd)
     def entropy(self):
-        return self.DiagGaussianPd.entropy()# + self.BernoulliPd.entropy()
+        return self.DiagGaussianPd.entropy() + self.BernoulliPd.entropy()
     def sample(self):
         return tf.concat([self.BernoulliPd.sample(), self.DiagGaussianPd.sample()], axis=1)
     @classmethod
