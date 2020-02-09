@@ -51,12 +51,15 @@ class PCPO(object):
         set_global_seeds(seed)
         np.set_printoptions(precision=3)
 
-        if isinstance(env, str):
+        if isinstance(env, gym.Env):
+            env = env
+        elif isinstance(env, str):
             env = self.make_vec_env(env, seed=seed, logger_dir=logger_dir, num_env=num_env, force_dummy=force_dummy, info_keywords=info_keywords)
-            policy = build_policy(env, network, **network_kwargs)
 
         ob_space = env.observation_space
         ac_space = env.action_space
+        
+        policy = build_policy(env, network, **network_kwargs)
 
         # Instantiate the model object and runner object
         model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, ent_coef=ent_coef,
@@ -165,6 +168,7 @@ class PCPO(object):
                 info_keywords=info_keywords,
             )
         set_global_seeds(seed)
+
         if not force_dummy and num_env > 1:
             return SubprocVecEnv([make_thunk(i) for i in range(num_env)])
         else:

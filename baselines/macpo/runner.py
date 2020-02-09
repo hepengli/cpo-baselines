@@ -25,7 +25,12 @@ class Runner(AbstractEnvRunner):
         epinfos, ep_obs, ep_values = [], [ob for ob in self.obs.copy()], []
 
         if self.model.name_scope == 'rg':
-            op_actions, op_values, _, _ = op_model.step(self.obs)
+            # op_actions, op_values, _, _ = op_model.step(self.obs)
+            op_actions = np.zeros(shape=[self.env.num_envs, 1])
+            op_values = np.zeros(shape=[1])
+        elif self.model.name_scope == 'em':
+            op_actions = np.zeros(shape=[self.env.num_envs, 1])
+            op_values = op_model.pi.q_value(self.obs)
 
         # For n in range number of steps
         for _ in range(self.nsteps):
@@ -40,16 +45,16 @@ class Runner(AbstractEnvRunner):
 
             # Take actions in env and look the results
             # Infos contains a ton of useful informations
-            if self.model.name_scope == 'em':
-                op_actions = np.zeros(shape=[self.env.num_envs, 1])
-                op_values = op_model.pi.q_value(self.obs)
-
-            self.obs[:], rewards, self.dones, infos = self.env.step(actions, op_actions, op_values)
+            self.obs[:], rewards, self.dones, infos = self.env.step(actions)
 
             if self.model.name_scope == 'rg':
                 if np.all(self.dones):
-                    op_actions, op_values, _, _ = op_model.step(self.obs)
-                    rewards += op_values[:,0]
+                    # op_actions, op_values, _, _ = op_model.step(self.obs)
+                    op_actions = np.zeros(shape=[self.env.num_envs, 1])
+                    op_values = np.zeros(shape=[1])
+            elif self.model.name_scope == 'em':
+                op_actions = np.zeros(shape=[self.env.num_envs, 1])
+                op_values = op_model.pi.q_value(self.obs)
 
             safety = []
             for n, info in enumerate(infos):

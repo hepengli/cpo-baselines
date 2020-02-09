@@ -192,6 +192,7 @@ class Model(object):
                     include_final_partial_batch=False, batch_size=64):
                         g = self.allmean(self.compute_qflossandgrad(mbopob, mbopvalue))
                         self.qfadam.update(g, self.qf_stepsize)
+                        print(g)
 
         # compute loss and safety gradients
         with self.timed("computegrad"):

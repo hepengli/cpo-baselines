@@ -30,11 +30,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 class ClipActionsWrapper(gym.Wrapper):
     def step(self, action, **kwargs):
-        try:
-            low, high = self.env.unwrapped._feasible_action()
-        except:
-            low, high = self.action_space.low, self.action_space.high
-
+        low, high = self.env.unwrapped._feasible_action()
+        # print(low, high)
         import numpy as np
         action = np.nan_to_num(action)
         action = np.clip(action, low, high)
@@ -137,23 +134,23 @@ class PCPO(object):
 
             # self.env.envs[0].unwrapped.render()
 
-    def make_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, mpi_rank=0, subrank=0):
+    def make_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, mpi_rank=0, subrank=0, info_keywords=()):
         """
         Create a wrapped, monitored gym.Env for safety.
         """
         env = gym.make(env_id, **{"train":train})
         env.seed(seed + subrank if seed is not None else None)
-        env = Monitor(env, 
+        env = Monitor(env,
                     logger_dir and os.path.join(logger_dir, str(mpi_rank) + '.' + str(subrank)),
-                    allow_early_resets=True)
-        env.seed(seed)
+                    allow_early_resets=True,
+                    info_keywords=info_keywords)
         env = ClipActionsWrapper(env)
         if reward_scale != 1.0:
             from baselines.common.retro_wrappers import RewardScaler
             env = RewardScaler(env, reward_scale)
         return env
 
-    def make_vec_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, num_env=1):
+    def make_vec_env(self, env_id, seed, train=True, logger_dir=None, reward_scale=1.0, num_env=1, force_dummy=False, info_keywords=()):
         """
         Create a wrapped, monitored SubprocVecEnv for Atari and MuJoCo.
         """
@@ -167,14 +164,15 @@ class PCPO(object):
                 logger_dir=logger_dir,
                 reward_scale=reward_scale,
                 mpi_rank=mpi_rank,
-                subrank=0
+                subrank=rank,
+                info_keywords=info_keywords,
             )
         set_global_seeds(seed)
 
-        if num_env == 1:
-            return DummyVecEnv([make_thunk(i) for i in range(num_env)])
+        if not force_dummy and num_env > 1:
+            return SubprocVecEnv([make_thunk(i) for i in range(num_env)])
         else:
-            return ShmemVecEnv([make_thunk(i) for i in range(num_env)])
+            return DummyVecEnv([make_thunk(i) for i in range(num_env)])
 
 def flatten_lists(listoflists):
     return [el for list_ in listoflists for el in list_]
